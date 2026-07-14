@@ -1,0 +1,16 @@
+__pycache__/
+.idea/
+.venv/
+.cuda/
+.tools/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+*.pyd
+*.so
+*.obj
+*.exp
+*.lib
+*.ptx
+*.cubin
