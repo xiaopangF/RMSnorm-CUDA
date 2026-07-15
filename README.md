@@ -110,7 +110,7 @@ y_ref = x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps) * weight
 当前结果：
 
 ```text
-87 passed
+94 passed
 ```
 
 ## 性能测试
@@ -196,3 +196,4 @@ benchmark 性能
 - `docs/rmsnorm.md`: 解释 RMSNorm 公式、CUDA 线程分工、shared memory reduction、GB/s 指标和后续优化方向。
 - `docs/build_windows.md`: 解释本机 Windows + PyTorch CUDA extension 的构建环境和常见坑。
 - `docs/profiling.md`: 解释 Nsight Systems / Nsight Compute 怎么用于分析当前 CUDA kernel。
+- `docs/backward.md`: 解释 RMSNorm backward 公式、reference 实现和后续 CUDA backward 计划。
