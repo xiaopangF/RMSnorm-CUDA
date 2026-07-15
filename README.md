@@ -150,6 +150,21 @@ torch/warp   torch med / warp med
 .\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --dtype bfloat16
 ```
 
+## Profiling
+
+先运行纯 Python profile target：
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\profile_rmsnorm.py --op fused_warp --dtype float16 --batch 32 --hidden-size 4096 --warmup 10 --repeat 50
+```
+
+安装 Nsight 工具后，可以运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\profile_nsys.ps1 -Op fused_warp -DType float16
+powershell -ExecutionPolicy Bypass -File .\scripts\profile_ncu.ps1 -Op fused_warp -DType float16
+```
+
 ## 项目目标
 
 这个项目不是为了第一版就超过 PyTorch，而是为了建立完整闭环：
@@ -167,3 +182,4 @@ benchmark 性能
 
 - `docs/rmsnorm.md`: 解释 RMSNorm 公式、CUDA 线程分工、shared memory reduction、GB/s 指标和后续优化方向。
 - `docs/build_windows.md`: 解释本机 Windows + PyTorch CUDA extension 的构建环境和常见坑。
+- `docs/profiling.md`: 解释 Nsight Systems / Nsight Compute 怎么用于分析当前 CUDA kernel。
