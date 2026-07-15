@@ -29,14 +29,28 @@ if (-not (Test-Path $Python)) {
 
 $Ncu = Get-Command ncu -ErrorAction SilentlyContinue
 if (-not $Ncu) {
-    throw "ncu was not found in PATH. Install NVIDIA Nsight Compute or add it to PATH."
+    $NcuExe = Get-ChildItem `
+        -Path "C:\Program Files\NVIDIA Corporation" `
+        -Recurse `
+        -Filter ncu.exe `
+        -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+
+    if (-not $NcuExe) {
+        throw "ncu was not found. Install NVIDIA Nsight Compute or add ncu.exe to PATH."
+    }
+
+    $NcuPath = $NcuExe.FullName
+}
+else {
+    $NcuPath = $Ncu.Source
 }
 
 Push-Location $ProjectRoot
 try {
     New-Item -ItemType Directory -Force -Path "profiles" | Out-Null
 
-    & $Ncu.Source `
+    & $NcuPath `
         --set=roofline `
         --launch-skip $Warmup `
         --launch-count 1 `

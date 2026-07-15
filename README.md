@@ -165,6 +165,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\profile_nsys.ps1 -Op fused_wa
 powershell -ExecutionPolicy Bypass -File .\scripts\profile_ncu.ps1 -Op fused_warp -DType float16
 ```
 
+如果 Nsight Compute 和当前驱动不兼容，可以先用 PyTorch Profiler 导出 Chrome trace：
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\torch_profile_rmsnorm.py --op fused_warp --dtype float16
+```
+
 ## 项目目标
 
 这个项目不是为了第一版就超过 PyTorch，而是为了建立完整闭环：

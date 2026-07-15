@@ -140,7 +140,65 @@ ncu was not found in PATH
 
 说明还没有安装 Nsight Compute，或者安装了但没有加入 PATH。
 
-## 5. 先看哪些指标
+如果命令报：
+
+```text
+Cuda driver is not compatible with Nsight Compute
+```
+
+说明 Nsight Compute 版本和当前 NVIDIA 驱动不匹配。当前项目机器上观察到的情况是：
+
+```text
+Driver Version: 573.24
+CUDA Version: 12.8
+Nsight Compute: 2025.4.1
+```
+
+这种情况下不要继续猜 kernel 问题。要么升级 NVIDIA 驱动，要么安装和当前驱动更匹配的 Nsight Compute 版本。
+
+## 5. PyTorch Profiler 兜底方案
+
+如果暂时跑不了 `ncu`，可以先用 PyTorch Profiler 导出 Chrome trace：
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\torch_profile_rmsnorm.py --op fused_warp --dtype float16 --batch 32 --hidden-size 4096 --warmup 10 --repeat 50
+```
+
+它会输出两类东西：
+
+```text
+终端里的 operator / CUDA 时间表
+profiles\ 下的 Chrome trace JSON
+```
+
+打开 trace 的方法：
+
+```text
+Chrome 浏览器地址栏输入 chrome://tracing
+点 Load
+选择 profiles\ 里的 torch_trace_*.json
+```
+
+PyTorch Profiler 不如 Nsight Compute 细，但它能先回答：
+
+```text
+哪些 CUDA kernel 被调用了
+每个 kernel 大概用了多久
+Python / PyTorch 调用和 CUDA kernel 之间有没有明显空档
+```
+
+如果输出里看到：
+
+```text
+warning: no CUDA activity was captured
+CUPTI initialization failed
+```
+
+说明 PyTorch Profiler 也没拿到 CUDA 活动。当前机器上也观察到了这个情况。此时 CPU trace 还能看 Python 调用，但不能用它分析 CUDA kernel 内部性能。
+
+这和 `ncu` 报驱动不兼容是同一类问题：CUPTI / profiler 工具链和当前 NVIDIA 驱动没有配好。
+
+## 6. 先看哪些指标
 
 第一次看 Nsight Compute，不要被所有指标淹没。先看这几类：
 
@@ -163,7 +221,7 @@ Occupancy 太低，说明并发不够
 Warp stall 很高，说明 thread 经常在等某些资源
 ```
 
-## 6. 怎么比较两个实现
+## 7. 怎么比较两个实现
 
 不要只 profile 一个版本。建议成对比较：
 
@@ -187,7 +245,7 @@ half2 有没有真的减少访存瓶颈
 为什么 half2 看起来更高级，但 benchmark 没有稳定更快？
 ```
 
-## 7. 当前结论
+## 8. 当前结论
 
 当前 benchmark 已经说明：
 
@@ -196,13 +254,24 @@ warp reduction 有时比 shared reduction 快一点
 half2 没有稳定超过普通 warp 版本
 ```
 
-所以后续优化应该先靠 profiling 判断瓶颈，而不是继续凭感觉改 kernel。
+当前机器上 profiling 工具链状态：
+
+```text
+Nsight Compute 2025.4.1 已安装
+ncu.exe 可以启动
+ncu 采集时报 Cuda driver is not compatible with Nsight Compute
+PyTorch Profiler 可以导出 trace
+PyTorch Profiler 的 CUDA 活动因 CUPTI 初始化失败而缺失
+```
+
+所以后续优化应该先修好 profiling 工具链，而不是继续凭感觉改 kernel。
 
 下一步建议：
 
 ```text
-1. 安装并配置 Nsight Systems / Nsight Compute
-2. 跑 fused_warp 和 fused_half2 的 ncu profile
-3. 记录 Duration、DRAM Throughput、SM Throughput、Warp Stall
-4. 决定下一步是优化访存、减少重复读取，还是改线程分工
+1. 更新 NVIDIA 驱动，或安装和当前驱动匹配的 Nsight Compute
+2. 确认 ncu 能成功采集 fused_warp
+3. 跑 fused_warp 和 fused_half2 的 ncu profile
+4. 记录 Duration、DRAM Throughput、SM Throughput、Warp Stall
+5. 决定下一步是优化访存、减少重复读取，还是改线程分工
 ```
