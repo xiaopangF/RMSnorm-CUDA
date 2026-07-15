@@ -29,13 +29,23 @@ def tolerances(dtype: torch.dtype) -> tuple[float, float]:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize("batch,hidden_size", [(1, 16), (4, 1024), (32, 4096)])
 @pytest.mark.parametrize("dtype", supported_dtypes())
-def test_rmsnorm_matches_pytorch(batch: int, hidden_size: int, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize(
+    "rmsnorm_impl",
+    [rmsnorm_cuda.rmsnorm, rmsnorm_cuda.rmsnorm_warp],
+    ids=["shared", "warp"],
+)
+def test_rmsnorm_matches_pytorch(
+    batch: int,
+    hidden_size: int,
+    dtype: torch.dtype,
+    rmsnorm_impl,
+) -> None:
     torch.manual_seed(0)
     eps = 1e-6
     x = torch.randn(batch, hidden_size, device="cuda", dtype=dtype)
     weight = torch.randn(hidden_size, device="cuda", dtype=dtype)
 
-    actual = rmsnorm_cuda.rmsnorm(x, weight, eps)
+    actual = rmsnorm_impl(x, weight, eps)
     expected = rmsnorm_reference(x, weight, eps)
     rtol, atol = tolerances(dtype)
 
@@ -45,10 +55,16 @@ def test_rmsnorm_matches_pytorch(batch: int, hidden_size: int, dtype: torch.dtyp
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize("batch,hidden_size", [(1, 16), (4, 1024), (32, 4096)])
 @pytest.mark.parametrize("dtype", supported_dtypes())
+@pytest.mark.parametrize(
+    "fused_impl",
+    [rmsnorm_cuda.fused_add_rmsnorm, rmsnorm_cuda.fused_add_rmsnorm_warp],
+    ids=["shared", "warp"],
+)
 def test_fused_add_rmsnorm_matches_pytorch(
     batch: int,
     hidden_size: int,
     dtype: torch.dtype,
+    fused_impl,
 ) -> None:
     torch.manual_seed(0)
     eps = 1e-6
@@ -56,7 +72,7 @@ def test_fused_add_rmsnorm_matches_pytorch(
     residual = torch.randn(batch, hidden_size, device="cuda", dtype=dtype)
     weight = torch.randn(hidden_size, device="cuda", dtype=dtype)
 
-    actual = rmsnorm_cuda.fused_add_rmsnorm(x, residual, weight, eps)
+    actual = fused_impl(x, residual, weight, eps)
     expected = rmsnorm_reference(x + residual, weight, eps)
     rtol, atol = tolerances(dtype)
 

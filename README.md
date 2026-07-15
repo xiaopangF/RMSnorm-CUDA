@@ -9,6 +9,11 @@
 - `rmsnorm(x, weight, eps)`: 普通 RMSNorm。
 - `fused_add_rmsnorm(x, residual, weight, eps)`: 先算 `x + residual`，再做 RMSNorm，但不生成中间 tensor。
 
+同时提供 warp shuffle reduction 版本：
+
+- `rmsnorm_warp(x, weight, eps)`
+- `fused_add_rmsnorm_warp(x, residual, weight, eps)`
+
 ## RMSNorm 在做什么
 
 RMSNorm 会把每一行数字按整体大小缩放一下：
@@ -38,6 +43,7 @@ output = input / sqrt(mean(input^2) + eps) * weight
 - 支持二维输入 `[batch, hidden_size]`
 - 支持 CUDA tensor
 - 支持 fused residual add + RMSNorm forward
+- 支持 shared memory reduction 和 warp shuffle reduction 两种实现
 - 实现 forward，不实现 backward
 - 提供 correctness test 和 benchmark
 
@@ -97,7 +103,7 @@ y_ref = x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps) * weight
 当前结果：
 
 ```text
-20 passed
+38 passed
 ```
 
 ## 性能测试
@@ -109,11 +115,13 @@ y_ref = x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps) * weight
 benchmark 使用 CUDA event 计时，输出：
 
 ```text
-torch med    PyTorch reference 的 median latency
-custom med   自定义 CUDA kernel 的 median latency
-custom p90   自定义 CUDA kernel 的 p90 latency
-custom GB/s  自定义 CUDA kernel 的估算显存带宽
-speedup      torch med / custom med
+torch        PyTorch reference 的 median latency
+shared       shared memory reduction 版本的 median latency
+warp         warp shuffle reduction 版本的 median latency
+warp p90     warp 版本的 p90 latency
+warp GB/s    warp 版本的估算显存带宽
+warp/shared  shared med / warp med
+torch/warp   torch med / warp med
 ```
 
 脚本会输出两张表：

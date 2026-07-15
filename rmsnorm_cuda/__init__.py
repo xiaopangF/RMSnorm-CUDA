@@ -9,14 +9,19 @@ def rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.T
     """Run RMSNorm forward with the custom CUDA kernel.
 
     Args:
-        x: CUDA float32 tensor with shape [batch, hidden_size].
-        weight: CUDA float32 tensor with shape [hidden_size].
+        x: CUDA tensor with shape [batch, hidden_size].
+        weight: CUDA tensor with shape [hidden_size].
         eps: Small value used for numerical stability.
 
     Returns:
         CUDA tensor with the same shape as x.
     """
     return _C.rmsnorm_forward(x, weight, float(eps))
+
+
+def rmsnorm_warp(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Run RMSNorm forward with warp shuffle reduction."""
+    return _C.rmsnorm_warp_forward(x, weight, float(eps))
 
 
 def fused_add_rmsnorm(
@@ -33,4 +38,19 @@ def fused_add_rmsnorm(
     return _C.fused_add_rmsnorm_forward(x, residual, weight, float(eps))
 
 
-__all__ = ["fused_add_rmsnorm", "rmsnorm"]
+def fused_add_rmsnorm_warp(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Run fused residual add and RMSNorm with warp shuffle reduction."""
+    return _C.fused_add_rmsnorm_warp_forward(x, residual, weight, float(eps))
+
+
+__all__ = [
+    "fused_add_rmsnorm",
+    "fused_add_rmsnorm_warp",
+    "rmsnorm",
+    "rmsnorm_warp",
+]
