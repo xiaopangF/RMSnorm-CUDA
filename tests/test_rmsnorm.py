@@ -109,6 +109,94 @@ def test_fused_add_rmsnorm_half2_matches_pytorch(batch: int, hidden_size: int) -
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("shape", [(16,), (2, 3, 1024), (1, 2, 4, 16)])
+@pytest.mark.parametrize("dtype", supported_dtypes())
+@pytest.mark.parametrize(
+    "rmsnorm_impl",
+    [rmsnorm_cuda.rmsnorm, rmsnorm_cuda.rmsnorm_warp],
+    ids=["shared", "warp"],
+)
+def test_rmsnorm_supports_prefix_dimensions(
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+    rmsnorm_impl,
+) -> None:
+    torch.manual_seed(0)
+    eps = 1e-6
+    hidden_size = shape[-1]
+    x = torch.randn(*shape, device="cuda", dtype=dtype)
+    weight = torch.randn(hidden_size, device="cuda", dtype=dtype)
+
+    actual = rmsnorm_impl(x, weight, eps)
+    expected = rmsnorm_reference(x, weight, eps)
+    rtol, atol = tolerances(dtype)
+
+    assert actual.shape == x.shape
+    torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("shape", [(16,), (2, 3, 1024), (1, 2, 4, 16)])
+@pytest.mark.parametrize("dtype", supported_dtypes())
+@pytest.mark.parametrize(
+    "fused_impl",
+    [rmsnorm_cuda.fused_add_rmsnorm, rmsnorm_cuda.fused_add_rmsnorm_warp],
+    ids=["shared", "warp"],
+)
+def test_fused_add_rmsnorm_supports_prefix_dimensions(
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+    fused_impl,
+) -> None:
+    torch.manual_seed(0)
+    eps = 1e-6
+    hidden_size = shape[-1]
+    x = torch.randn(*shape, device="cuda", dtype=dtype)
+    residual = torch.randn(*shape, device="cuda", dtype=dtype)
+    weight = torch.randn(hidden_size, device="cuda", dtype=dtype)
+
+    actual = fused_impl(x, residual, weight, eps)
+    expected = rmsnorm_reference(x + residual, weight, eps)
+    rtol, atol = tolerances(dtype)
+
+    assert actual.shape == x.shape
+    torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("shape", [(16,), (2, 3, 1024), (1, 2, 4, 16)])
+def test_rmsnorm_half2_supports_prefix_dimensions(shape: tuple[int, ...]) -> None:
+    torch.manual_seed(0)
+    eps = 1e-6
+    hidden_size = shape[-1]
+    x = torch.randn(*shape, device="cuda", dtype=torch.float16)
+    weight = torch.randn(hidden_size, device="cuda", dtype=torch.float16)
+
+    actual = rmsnorm_cuda.rmsnorm_half2(x, weight, eps)
+    expected = rmsnorm_reference(x, weight, eps)
+
+    assert actual.shape == x.shape
+    torch.testing.assert_close(actual, expected, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("shape", [(16,), (2, 3, 1024), (1, 2, 4, 16)])
+def test_fused_add_rmsnorm_half2_supports_prefix_dimensions(shape: tuple[int, ...]) -> None:
+    torch.manual_seed(0)
+    eps = 1e-6
+    hidden_size = shape[-1]
+    x = torch.randn(*shape, device="cuda", dtype=torch.float16)
+    residual = torch.randn(*shape, device="cuda", dtype=torch.float16)
+    weight = torch.randn(hidden_size, device="cuda", dtype=torch.float16)
+
+    actual = rmsnorm_cuda.fused_add_rmsnorm_half2(x, residual, weight, eps)
+    expected = rmsnorm_reference(x + residual, weight, eps)
+
+    assert actual.shape == x.shape
+    torch.testing.assert_close(actual, expected, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_rmsnorm_requires_contiguous_input() -> None:
     x = torch.randn(8, 16, device="cuda", dtype=torch.float32).t()
     weight = torch.randn(8, device="cuda", dtype=torch.float32)

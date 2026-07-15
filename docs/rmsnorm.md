@@ -41,12 +41,12 @@ y[i] = x[i] * inv_rms * weight[i]
 
 ## 2. 输入输出
 
-当前项目支持二维 CUDA tensor，dtype 可以是 `float32`、`float16` 或 `bfloat16`：
+当前项目支持任意前缀维度的 CUDA tensor，dtype 可以是 `float32`、`float16` 或 `bfloat16`：
 
 ```text
-x:      [batch, hidden_size]
+x:      [..., hidden_size]
 weight: [hidden_size]
-y:      [batch, hidden_size]
+y:      [..., hidden_size]
 ```
 
 `x`、`weight` 和输出 `y` 的 dtype 相同。比如输入是 `float16`，输出也是 `float16`。
@@ -61,7 +61,7 @@ float32 累加平方和
 
 这样做是因为 RMSNorm 要把一整行很多数字加起来。如果全程用 `float16` 加，误差会更明显。
 
-比如：
+比如二维输入：
 
 ```text
 x shape = [32, 4096]
@@ -74,14 +74,36 @@ x shape = [32, 4096]
 每行 4096 个数字
 ```
 
-RMSNorm 按行处理。每一行有自己的 `mean_square` 和 `inv_rms`。
+也可以是三维输入：
+
+```text
+x shape = [4, 128, 4096]
+```
+
+可以理解成：
+
+```text
+4 个 batch
+每个 batch 有 128 个 token
+每个 token 有 4096 个 hidden 数字
+```
+
+CUDA kernel 内部会把前面的维度展平成：
+
+```text
+rows = 4 * 128 = 512
+hidden_size = 4096
+```
+
+RMSNorm 按最后一维处理。每一行，也就是每个 token 的 hidden 向量，有自己的 `mean_square` 和 `inv_rms`。
 
 ## 3. GPU 怎么分工
 
 当前 kernel 的分工方式是：
 
 ```text
-一个 CUDA block 处理 x 的一行
+把 x 看成 [rows, hidden_size]
+一个 CUDA block 处理一行
 一个 block 里有 256 个 thread
 ```
 
@@ -338,7 +360,8 @@ bfloat16 = 2 bytes
 所以估算：
 
 ```text
-bytes = batch * hidden_size * element_size * 4
+rows = x.numel() / hidden_size
+bytes = rows * hidden_size * element_size * 4
 ```
 
 这是粗略估算，不代表真实硬件事务数，但足够帮助我们判断优化方向。
@@ -355,6 +378,7 @@ bytes = batch * hidden_size * element_size * 4
 
 ```text
 batch       batch size
+seq         seq_len，默认是 1
 hidden      hidden_size
 torch       PyTorch reference 的 median latency，单位 ms
 shared      shared memory reduction 版本的 median latency，单位 ms
@@ -387,6 +411,12 @@ p90 能看尾延迟是否稳定
 
 ```powershell
 .\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --extended
+```
+
+测试三维输入：
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --dtype float16 --seq-len 8
 ```
 
 ## 11. fused add + RMSNorm 是什么
@@ -457,9 +487,9 @@ half2 版本只支持 float16 且 hidden_size 为偶数
 ```text
 1. 用 benchmark 观察不同 batch / hidden_size 的 GB/s
 2. 做 Nsight Compute profiling，确认瓶颈到底是访存、同步还是 launch
-3. 支持任意前缀维度，比如 [batch, seq_len, hidden_size]
-4. 支持 backward
-5. 扩展更多 LLM 常见算子
+3. 支持 backward
+4. 扩展更多 LLM 常见算子
+5. 整理 CI / release / wheels
 ```
 
-fused residual + RMSNorm、`float16`、`bfloat16`、warp shuffle reduction 和 half2 实验路径都已经实现。下一步最值得做的是 profiling，因为 benchmark 已经说明“看起来更高级”的 half2 不一定自动更快，需要用工具定位真正瓶颈。
+fused residual + RMSNorm、`float16`、`bfloat16`、warp shuffle reduction、half2 实验路径和任意前缀维度都已经实现。下一步最值得做的是 profiling 或 backward，因为前者能指导继续优化，后者能把项目从 inference forward 扩展到训练路径。

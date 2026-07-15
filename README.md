@@ -27,9 +27,10 @@ RMSNorm 会把每一行数字按整体大小缩放一下：
 output = input / sqrt(mean(input^2) + eps) * weight
 ```
 
-如果输入是 `[batch, hidden_size]`，当前 CUDA 分工是：
+如果输入是 `[..., hidden_size]`，当前 CUDA 分工是：
 
 ```text
+把前面的维度展平成很多行
 一个 CUDA block 处理一行
 一个 block 里的多个 thread 一起处理这一行的 hidden_size 个数字
 ```
@@ -45,7 +46,7 @@ output = input / sqrt(mean(input^2) + eps) * weight
 ## 当前范围
 
 - 支持 `float32` / `float16` / `bfloat16`
-- 支持二维输入 `[batch, hidden_size]`
+- 支持任意前缀维度 `[..., hidden_size]`，比如 `[batch, seq_len, hidden_size]`
 - 支持 CUDA tensor
 - 支持 fused residual add + RMSNorm forward
 - 支持 shared memory reduction 和 warp shuffle reduction 两种实现
@@ -109,7 +110,7 @@ y_ref = x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps) * weight
 当前结果：
 
 ```text
-45 passed
+87 passed
 ```
 
 ## 性能测试
@@ -148,6 +149,12 @@ torch/warp   torch med / warp med
 ```powershell
 .\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --dtype float16
 .\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --dtype bfloat16
+```
+
+测试 `[batch, seq_len, hidden_size]` 输入：
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --dtype float16 --seq-len 8
 ```
 
 ## Profiling

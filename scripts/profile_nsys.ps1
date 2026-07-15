@@ -15,6 +15,7 @@ param(
     [string]$DType = "float16",
 
     [int]$Batch = 32,
+    [int]$SeqLen = 1,
     [int]$HiddenSize = 4096,
     [int]$Warmup = 20,
     [int]$Repeat = 200,
@@ -46,6 +47,7 @@ try {
         --op $Op `
         --dtype $DType `
         --batch $Batch `
+        --seq-len $SeqLen `
         --hidden-size $HiddenSize `
         --warmup $Warmup `
         --repeat $Repeat

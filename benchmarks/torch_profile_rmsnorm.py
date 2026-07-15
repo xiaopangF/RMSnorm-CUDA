@@ -26,6 +26,7 @@ def main() -> None:
     )
     parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float16")
     parser.add_argument("--batch", type=int, default=32)
+    parser.add_argument("--seq-len", type=int, default=1)
     parser.add_argument("--hidden-size", type=int, default=4096)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--repeat", type=int, default=50)
@@ -37,8 +38,10 @@ def main() -> None:
         raise SystemExit("CUDA is required.")
 
     dtype = parse_dtype(args.dtype)
+    if args.seq_len < 1:
+        raise SystemExit("--seq-len must be greater than 0.")
     validate_args(args.op, dtype, args.hidden_size)
-    workload = build_workload(args.op, args.batch, args.hidden_size, dtype, args.eps)
+    workload = build_workload(args.op, args.batch, args.seq_len, args.hidden_size, dtype, args.eps)
 
     for _ in range(args.warmup):
         workload()
@@ -52,7 +55,7 @@ def main() -> None:
         with_stack=False,
     ) as profiler:
         torch.cuda.nvtx.range_push(
-            f"{args.op}:batch={args.batch},hidden={args.hidden_size},dtype={args.dtype}"
+            f"{args.op}:batch={args.batch},seq={args.seq_len},hidden={args.hidden_size},dtype={args.dtype}"
         )
         for _ in range(args.repeat):
             workload()
@@ -62,7 +65,7 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     trace_path = output_dir / (
-        f"torch_trace_{args.op}_{args.dtype}_b{args.batch}_h{args.hidden_size}.json"
+        f"torch_trace_{args.op}_{args.dtype}_b{args.batch}_s{args.seq_len}_h{args.hidden_size}.json"
     )
     profiler.export_chrome_trace(str(trace_path))
 

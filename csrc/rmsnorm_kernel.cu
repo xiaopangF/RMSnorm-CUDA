@@ -12,6 +12,15 @@ bool is_supported_dtype(at::ScalarType dtype) {
   return dtype == at::kFloat || dtype == at::kHalf || dtype == at::kBFloat16;
 }
 
+int64_t get_hidden_size(at::Tensor x) {
+  TORCH_CHECK(x.dim() >= 1, "x must have shape [..., hidden_size]");
+  return x.size(x.dim() - 1);
+}
+
+int64_t get_row_count(at::Tensor x, int64_t hidden_size) {
+  return x.numel() / hidden_size;
+}
+
 __device__ __forceinline__ float warp_reduce_sum(float value) {
   for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
     value += __shfl_down_sync(0xffffffff, value, offset);
@@ -437,15 +446,15 @@ at::Tensor rmsnorm_forward(at::Tensor x, at::Tensor weight, double eps) {
   TORCH_CHECK(weight.is_cuda(), "weight must be a CUDA tensor");
   TORCH_CHECK(is_supported_dtype(x.scalar_type()), "x must be float32, float16, or bfloat16");
   TORCH_CHECK(weight.scalar_type() == x.scalar_type(), "weight dtype must match x dtype");
-  TORCH_CHECK(x.dim() == 2, "x must have shape [batch, hidden_size]");
+  TORCH_CHECK(x.dim() >= 1, "x must have shape [..., hidden_size]");
   TORCH_CHECK(weight.dim() == 1, "weight must have shape [hidden_size]");
   TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
   TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
 
-  const int64_t rows = x.size(0);
-  const int64_t hidden_size = x.size(1);
+  const int64_t hidden_size = get_hidden_size(x);
   TORCH_CHECK(weight.size(0) == hidden_size, "weight size must match x hidden_size");
   TORCH_CHECK(hidden_size > 0, "hidden_size must be greater than 0");
+  const int64_t rows = get_row_count(x, hidden_size);
 
   auto y = at::empty_like(x);
   if (rows == 0) {
@@ -479,15 +488,15 @@ at::Tensor rmsnorm_warp_forward(at::Tensor x, at::Tensor weight, double eps) {
   TORCH_CHECK(weight.is_cuda(), "weight must be a CUDA tensor");
   TORCH_CHECK(is_supported_dtype(x.scalar_type()), "x must be float32, float16, or bfloat16");
   TORCH_CHECK(weight.scalar_type() == x.scalar_type(), "weight dtype must match x dtype");
-  TORCH_CHECK(x.dim() == 2, "x must have shape [batch, hidden_size]");
+  TORCH_CHECK(x.dim() >= 1, "x must have shape [..., hidden_size]");
   TORCH_CHECK(weight.dim() == 1, "weight must have shape [hidden_size]");
   TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
   TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
 
-  const int64_t rows = x.size(0);
-  const int64_t hidden_size = x.size(1);
+  const int64_t hidden_size = get_hidden_size(x);
   TORCH_CHECK(weight.size(0) == hidden_size, "weight size must match x hidden_size");
   TORCH_CHECK(hidden_size > 0, "hidden_size must be greater than 0");
+  const int64_t rows = get_row_count(x, hidden_size);
 
   auto y = at::empty_like(x);
   if (rows == 0) {
@@ -523,16 +532,16 @@ at::Tensor rmsnorm_half2_forward(at::Tensor x, at::Tensor weight, double eps) {
   TORCH_CHECK(weight.is_cuda(), "weight must be a CUDA tensor");
   TORCH_CHECK(x.scalar_type() == at::kHalf, "x must be float16");
   TORCH_CHECK(weight.scalar_type() == at::kHalf, "weight must be float16");
-  TORCH_CHECK(x.dim() == 2, "x must have shape [batch, hidden_size]");
+  TORCH_CHECK(x.dim() >= 1, "x must have shape [..., hidden_size]");
   TORCH_CHECK(weight.dim() == 1, "weight must have shape [hidden_size]");
   TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
   TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
 
-  const int64_t rows = x.size(0);
-  const int64_t hidden_size = x.size(1);
+  const int64_t hidden_size = get_hidden_size(x);
   TORCH_CHECK(weight.size(0) == hidden_size, "weight size must match x hidden_size");
   TORCH_CHECK(hidden_size > 0, "hidden_size must be greater than 0");
   TORCH_CHECK(hidden_size % 2 == 0, "hidden_size must be even for half2");
+  const int64_t rows = get_row_count(x, hidden_size);
 
   auto y = at::empty_like(x);
   if (rows == 0) {
@@ -558,18 +567,17 @@ at::Tensor fused_add_rmsnorm_forward(
   TORCH_CHECK(is_supported_dtype(x.scalar_type()), "x must be float32, float16, or bfloat16");
   TORCH_CHECK(residual.scalar_type() == x.scalar_type(), "residual dtype must match x dtype");
   TORCH_CHECK(weight.scalar_type() == x.scalar_type(), "weight dtype must match x dtype");
-  TORCH_CHECK(x.dim() == 2, "x must have shape [batch, hidden_size]");
-  TORCH_CHECK(residual.dim() == 2, "residual must have shape [batch, hidden_size]");
+  TORCH_CHECK(x.dim() >= 1, "x must have shape [..., hidden_size]");
   TORCH_CHECK(weight.dim() == 1, "weight must have shape [hidden_size]");
   TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
   TORCH_CHECK(residual.is_contiguous(), "residual must be contiguous");
   TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
   TORCH_CHECK(residual.sizes() == x.sizes(), "residual shape must match x shape");
 
-  const int64_t rows = x.size(0);
-  const int64_t hidden_size = x.size(1);
+  const int64_t hidden_size = get_hidden_size(x);
   TORCH_CHECK(weight.size(0) == hidden_size, "weight size must match x hidden_size");
   TORCH_CHECK(hidden_size > 0, "hidden_size must be greater than 0");
+  const int64_t rows = get_row_count(x, hidden_size);
 
   auto y = at::empty_like(x);
   if (rows == 0) {
@@ -611,18 +619,17 @@ at::Tensor fused_add_rmsnorm_warp_forward(
   TORCH_CHECK(is_supported_dtype(x.scalar_type()), "x must be float32, float16, or bfloat16");
   TORCH_CHECK(residual.scalar_type() == x.scalar_type(), "residual dtype must match x dtype");
   TORCH_CHECK(weight.scalar_type() == x.scalar_type(), "weight dtype must match x dtype");
-  TORCH_CHECK(x.dim() == 2, "x must have shape [batch, hidden_size]");
-  TORCH_CHECK(residual.dim() == 2, "residual must have shape [batch, hidden_size]");
+  TORCH_CHECK(x.dim() >= 1, "x must have shape [..., hidden_size]");
   TORCH_CHECK(weight.dim() == 1, "weight must have shape [hidden_size]");
   TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
   TORCH_CHECK(residual.is_contiguous(), "residual must be contiguous");
   TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
   TORCH_CHECK(residual.sizes() == x.sizes(), "residual shape must match x shape");
 
-  const int64_t rows = x.size(0);
-  const int64_t hidden_size = x.size(1);
+  const int64_t hidden_size = get_hidden_size(x);
   TORCH_CHECK(weight.size(0) == hidden_size, "weight size must match x hidden_size");
   TORCH_CHECK(hidden_size > 0, "hidden_size must be greater than 0");
+  const int64_t rows = get_row_count(x, hidden_size);
 
   auto y = at::empty_like(x);
   if (rows == 0) {
@@ -664,19 +671,18 @@ at::Tensor fused_add_rmsnorm_half2_forward(
   TORCH_CHECK(x.scalar_type() == at::kHalf, "x must be float16");
   TORCH_CHECK(residual.scalar_type() == at::kHalf, "residual must be float16");
   TORCH_CHECK(weight.scalar_type() == at::kHalf, "weight must be float16");
-  TORCH_CHECK(x.dim() == 2, "x must have shape [batch, hidden_size]");
-  TORCH_CHECK(residual.dim() == 2, "residual must have shape [batch, hidden_size]");
+  TORCH_CHECK(x.dim() >= 1, "x must have shape [..., hidden_size]");
   TORCH_CHECK(weight.dim() == 1, "weight must have shape [hidden_size]");
   TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
   TORCH_CHECK(residual.is_contiguous(), "residual must be contiguous");
   TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
   TORCH_CHECK(residual.sizes() == x.sizes(), "residual shape must match x shape");
 
-  const int64_t rows = x.size(0);
-  const int64_t hidden_size = x.size(1);
+  const int64_t hidden_size = get_hidden_size(x);
   TORCH_CHECK(weight.size(0) == hidden_size, "weight size must match x hidden_size");
   TORCH_CHECK(hidden_size > 0, "hidden_size must be greater than 0");
   TORCH_CHECK(hidden_size % 2 == 0, "hidden_size must be even for half2");
+  const int64_t rows = get_row_count(x, hidden_size);
 
   auto y = at::empty_like(x);
   if (rows == 0) {

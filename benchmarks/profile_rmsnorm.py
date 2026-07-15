@@ -25,12 +25,14 @@ def rmsnorm_reference(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torc
 def build_workload(
     op: str,
     batch: int,
+    seq_len: int,
     hidden_size: int,
     dtype: torch.dtype,
     eps: float,
 ) -> Callable[[], torch.Tensor]:
-    x = torch.randn(batch, hidden_size, device="cuda", dtype=dtype)
-    residual = torch.randn(batch, hidden_size, device="cuda", dtype=dtype)
+    shape = (batch, hidden_size) if seq_len == 1 else (batch, seq_len, hidden_size)
+    x = torch.randn(*shape, device="cuda", dtype=dtype)
+    residual = torch.randn(*shape, device="cuda", dtype=dtype)
     weight = torch.randn(hidden_size, device="cuda", dtype=dtype)
 
     if op == "torch_rmsnorm":
@@ -79,6 +81,7 @@ def main() -> None:
     )
     parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float16")
     parser.add_argument("--batch", type=int, default=32)
+    parser.add_argument("--seq-len", type=int, default=1)
     parser.add_argument("--hidden-size", type=int, default=4096)
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--repeat", type=int, default=200)
@@ -89,8 +92,10 @@ def main() -> None:
         raise SystemExit("CUDA is required.")
 
     dtype = parse_dtype(args.dtype)
+    if args.seq_len < 1:
+        raise SystemExit("--seq-len must be greater than 0.")
     validate_args(args.op, dtype, args.hidden_size)
-    workload = build_workload(args.op, args.batch, args.hidden_size, dtype, args.eps)
+    workload = build_workload(args.op, args.batch, args.seq_len, args.hidden_size, dtype, args.eps)
 
     for _ in range(args.warmup):
         workload()
@@ -100,7 +105,7 @@ def main() -> None:
     end = torch.cuda.Event(enable_timing=True)
 
     torch.cuda.nvtx.range_push(
-        f"{args.op}:batch={args.batch},hidden={args.hidden_size},dtype={args.dtype}"
+        f"{args.op}:batch={args.batch},seq={args.seq_len},hidden={args.hidden_size},dtype={args.dtype}"
     )
     start.record()
     for _ in range(args.repeat):
@@ -113,7 +118,10 @@ def main() -> None:
     print(f"device: {torch.cuda.get_device_name(0)}")
     print(f"op: {args.op}")
     print(f"dtype: {args.dtype}")
-    print(f"shape: [{args.batch}, {args.hidden_size}]")
+    if args.seq_len == 1:
+        print(f"shape: [{args.batch}, {args.hidden_size}]")
+    else:
+        print(f"shape: [{args.batch}, {args.seq_len}, {args.hidden_size}]")
     print(f"repeat: {args.repeat}")
     print(f"total_ms: {total_ms:.4f}")
     print(f"avg_ms: {total_ms / args.repeat:.6f}")

@@ -9,7 +9,7 @@ def rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.T
     """Run RMSNorm forward with the custom CUDA kernel.
 
     Args:
-        x: CUDA tensor with shape [batch, hidden_size].
+        x: CUDA tensor with shape [..., hidden_size].
         weight: CUDA tensor with shape [hidden_size].
         eps: Small value used for numerical stability.
 
