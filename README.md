@@ -2,7 +2,7 @@
 
 一个面向新手的 CUDA LLM 算子项目。第一阶段目标：
 
-> 实现一个可以从 Python 调用的 `float32` RMSNorm CUDA forward 算子，并和 PyTorch reference 对比正确性和速度。
+> 实现可以从 Python 调用的 RMSNorm CUDA forward 算子，并和 PyTorch reference 对比正确性和速度。
 
 当前已经包含两个 CUDA 算子：
 
@@ -34,7 +34,7 @@ output = input / sqrt(mean(input^2) + eps) * weight
 
 ## 当前范围
 
-- 支持 `float32`
+- 支持 `float32` / `float16` / `bfloat16`
 - 支持二维输入 `[batch, hidden_size]`
 - 支持 CUDA tensor
 - 支持 fused residual add + RMSNorm forward
@@ -43,7 +43,6 @@ output = input / sqrt(mean(input^2) + eps) * weight
 
 后续再扩展：
 
-- `float16` / `bfloat16`
 - Softmax
 - RoPE
 - FlashAttention mini
@@ -98,7 +97,7 @@ y_ref = x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps) * weight
 当前结果：
 
 ```text
-8 passed
+20 passed
 ```
 
 ## 性能测试
@@ -126,6 +125,13 @@ speedup      torch med / custom med
 
 ```powershell
 .\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --extended
+```
+
+测试低精度 dtype：
+
+```powershell
+.\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --dtype float16
+.\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --dtype bfloat16
 ```
 
 ## 项目目标

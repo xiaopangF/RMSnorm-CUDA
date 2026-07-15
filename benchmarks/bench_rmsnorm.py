@@ -112,20 +112,39 @@ def get_shapes(extended: bool) -> list[tuple[int, int]]:
     ]
 
 
+def parse_dtype(name: str) -> torch.dtype:
+    if name == "float32":
+        return torch.float32
+    if name == "float16":
+        return torch.float16
+    if name == "bfloat16":
+        return torch.bfloat16
+    raise ValueError(f"unsupported dtype: {name}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--repeat", type=int, default=100)
     parser.add_argument("--extended", action="store_true", help="Run a wider shape sweep.")
+    parser.add_argument(
+        "--dtype",
+        choices=["float32", "float16", "bfloat16"],
+        default="float32",
+        help="Tensor dtype used by the benchmark.",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required for this benchmark.")
+    if args.dtype == "bfloat16" and not torch.cuda.is_bf16_supported():
+        raise SystemExit("bfloat16 is not supported by this CUDA device.")
 
     eps = 1e-6
+    dtype = parse_dtype(args.dtype)
 
     print(f"device: {torch.cuda.get_device_name(0)}")
-    print("dtype: float32")
+    print(f"dtype: {args.dtype}")
     print(f"warmup: {args.warmup}, repeat: {args.repeat}")
     print()
     print("RMSNorm")
@@ -136,8 +155,8 @@ def main() -> None:
     )
 
     for batch, hidden_size in get_shapes(args.extended):
-        x = torch.randn(batch, hidden_size, device="cuda", dtype=torch.float32)
-        weight = torch.randn(hidden_size, device="cuda", dtype=torch.float32)
+        x = torch.randn(batch, hidden_size, device="cuda", dtype=dtype)
+        weight = torch.randn(hidden_size, device="cuda", dtype=dtype)
 
         torch_stats = time_cuda(lambda: rmsnorm_reference(x, weight, eps), args.warmup, args.repeat)
         custom_stats = time_cuda(lambda: rmsnorm_cuda.rmsnorm(x, weight, eps), args.warmup, args.repeat)
@@ -162,9 +181,9 @@ def main() -> None:
     )
 
     for batch, hidden_size in get_shapes(args.extended):
-        x = torch.randn(batch, hidden_size, device="cuda", dtype=torch.float32)
-        residual = torch.randn(batch, hidden_size, device="cuda", dtype=torch.float32)
-        weight = torch.randn(hidden_size, device="cuda", dtype=torch.float32)
+        x = torch.randn(batch, hidden_size, device="cuda", dtype=dtype)
+        residual = torch.randn(batch, hidden_size, device="cuda", dtype=dtype)
+        weight = torch.randn(hidden_size, device="cuda", dtype=dtype)
 
         torch_stats = time_cuda(
             lambda: fused_add_rmsnorm_reference(x, residual, weight, eps),

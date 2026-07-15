@@ -41,13 +41,25 @@ y[i] = x[i] * inv_rms * weight[i]
 
 ## 2. 输入输出
 
-当前项目只支持二维 `float32` CUDA tensor：
+当前项目支持二维 CUDA tensor，dtype 可以是 `float32`、`float16` 或 `bfloat16`：
 
 ```text
 x:      [batch, hidden_size]
 weight: [hidden_size]
 y:      [batch, hidden_size]
 ```
+
+`x`、`weight` 和输出 `y` 的 dtype 相同。比如输入是 `float16`，输出也是 `float16`。
+
+不过平方和不是用 `float16` 累加，而是转成 `float` 累加：
+
+```text
+低精度输入/输出
+float32 累加平方和
+低精度写回输出
+```
+
+这样做是因为 RMSNorm 要把一整行很多数字加起来。如果全程用 `float16` 加，误差会更明显。
 
 比如：
 
@@ -208,10 +220,18 @@ GB/s = 读写字节数 / kernel 时间
 写 y 一次
 ```
 
-对于 `float32`，每个元素 4 bytes，所以估算：
+不同 dtype 的元素大小不同：
 
 ```text
-bytes = batch * hidden_size * 4 * 4
+float32  = 4 bytes
+float16  = 2 bytes
+bfloat16 = 2 bytes
+```
+
+所以估算：
+
+```text
+bytes = batch * hidden_size * element_size * 4
 ```
 
 这是粗略估算，不代表真实硬件事务数，但足够帮助我们判断优化方向。
@@ -302,7 +322,6 @@ out = RMSNorm(x + residual)
 当前版本限制：
 
 ```text
-只支持 float32
 只支持 forward
 只支持 contiguous tensor
 每行固定使用 256 个 thread
@@ -318,9 +337,9 @@ reduction 使用 shared memory
 ```text
 1. 用 benchmark 观察不同 batch / hidden_size 的 GB/s
 2. 用 warp shuffle 优化 reduction
-3. 支持 half / bfloat16
-4. 支持 backward
-5. 扩展更多 LLM 常见算子
+3. 支持 backward
+4. 扩展更多 LLM 常见算子
+5. 增加向量化读写，比如 half2 / bf162
 ```
 
-fused residual + RMSNorm 已经实现。下一步最值得做的是支持 `float16` / `bfloat16`，因为真实 LLM 推理通常不会用 `float32` 跑主路径。
+fused residual + RMSNorm、`float16` 和 `bfloat16` 都已经实现。下一步最值得做的是优化 reduction，比如用 warp shuffle 替代一部分 shared memory 同步。
