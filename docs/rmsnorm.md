@@ -250,7 +250,54 @@ p90 能看尾延迟是否稳定
 .\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --extended
 ```
 
-## 9. 当前 kernel 的限制
+## 9. fused add + RMSNorm 是什么
+
+真实大模型里经常会看到这种模式：
+
+```python
+tmp = x + residual
+out = rmsnorm(tmp, weight)
+```
+
+通俗理解：
+
+```text
+x        是当前层新算出来的结果
+residual 是之前绕过来的残差
+tmp      是两者相加后的结果
+out      是归一化后的结果
+```
+
+普通 PyTorch 写法通常会先生成 `tmp` 这个中间 tensor，然后 RMSNorm 再读取它。
+
+融合版 kernel 做的是：
+
+```text
+不把 tmp 单独写进显存
+需要 tmp[i] 的时候，现场计算 x[i] + residual[i]
+然后直接参与 RMSNorm
+```
+
+数学结果不变：
+
+```text
+out = RMSNorm(x + residual)
+```
+
+但显存读写更少。对于这种 memory-bound 算子，少读写显存通常比少做几次加法更重要。
+
+当前 fused kernel 的粗略读写量：
+
+```text
+读 x 两次
+读 residual 两次
+读 weight 一次
+写 y 一次
+```
+
+它仍然会重复读取 `x` 和 `residual`，因为第一遍要算平方和，第二遍要写输出。后续优化可以尝试让更小的 hidden size 复用中间值，或者用更高级的 reduction 写法。
+
+## 10. 当前 kernel 的限制
 
 当前版本限制：
 
@@ -264,7 +311,7 @@ reduction 使用 shared memory
 
 这些限制是刻意保留的。第一版目标是把 CUDA kernel、PyTorch binding、测试和 benchmark 全链路跑通。
 
-## 10. 下一步优化
+## 11. 下一步优化
 
 建议顺序：
 
@@ -272,17 +319,8 @@ reduction 使用 shared memory
 1. 用 benchmark 观察不同 batch / hidden_size 的 GB/s
 2. 用 warp shuffle 优化 reduction
 3. 支持 half / bfloat16
-4. 实现 fused residual + RMSNorm
-5. 支持 backward
+4. 支持 backward
+5. 扩展更多 LLM 常见算子
 ```
 
-最值得先做的是 fused residual + RMSNorm。
-
-真实大模型里经常有：
-
-```python
-tmp = x + residual
-out = rmsnorm(tmp, weight)
-```
-
-融合成一个 kernel 后，可以减少一次中间 tensor 读写。
+fused residual + RMSNorm 已经实现。下一步最值得做的是支持 `float16` / `bfloat16`，因为真实 LLM 推理通常不会用 `float32` 跑主路径。

@@ -4,6 +4,11 @@
 
 > 实现一个可以从 Python 调用的 `float32` RMSNorm CUDA forward 算子，并和 PyTorch reference 对比正确性和速度。
 
+当前已经包含两个 CUDA 算子：
+
+- `rmsnorm(x, weight, eps)`: 普通 RMSNorm。
+- `fused_add_rmsnorm(x, residual, weight, eps)`: 先算 `x + residual`，再做 RMSNorm，但不生成中间 tensor。
+
 ## RMSNorm 在做什么
 
 RMSNorm 会把每一行数字按整体大小缩放一下：
@@ -32,13 +37,13 @@ output = input / sqrt(mean(input^2) + eps) * weight
 - 支持 `float32`
 - 支持二维输入 `[batch, hidden_size]`
 - 支持 CUDA tensor
+- 支持 fused residual add + RMSNorm forward
 - 实现 forward，不实现 backward
 - 提供 correctness test 和 benchmark
 
 后续再扩展：
 
 - `float16` / `bfloat16`
-- fused residual + RMSNorm
 - Softmax
 - RoPE
 - FlashAttention mini
@@ -93,7 +98,7 @@ y_ref = x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps) * weight
 当前结果：
 
 ```text
-4 passed
+8 passed
 ```
 
 ## 性能测试
@@ -111,6 +116,11 @@ custom p90   自定义 CUDA kernel 的 p90 latency
 custom GB/s  自定义 CUDA kernel 的估算显存带宽
 speedup      torch med / custom med
 ```
+
+脚本会输出两张表：
+
+- `RMSNorm`: 普通 RMSNorm。
+- `Fused add + RMSNorm`: 对比 PyTorch 写法 `rmsnorm_reference(x + residual, weight, eps)` 和自定义融合 kernel。
 
 更宽的 shape sweep：
 

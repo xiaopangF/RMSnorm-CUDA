@@ -21,6 +21,15 @@ def rmsnorm_reference(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torc
     return x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps) * weight
 
 
+def fused_add_rmsnorm_reference(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    return rmsnorm_reference(x + residual, weight, eps)
+
+
 def percentile(samples: list[float], pct: float) -> float:
     if not samples:
         raise ValueError("samples must not be empty")
@@ -62,6 +71,15 @@ def estimate_custom_bytes(batch: int, hidden_size: int, dtype_size: int) -> int:
     weight_read = batch * hidden_size * dtype_size
     y_write = batch * hidden_size * dtype_size
     return x_read + weight_read + y_write
+
+
+def estimate_fused_custom_bytes(batch: int, hidden_size: int, dtype_size: int) -> int:
+    # Fused kernel reads x and residual twice, reads weight once, and writes y once.
+    x_read = batch * hidden_size * dtype_size * 2
+    residual_read = batch * hidden_size * dtype_size * 2
+    weight_read = batch * hidden_size * dtype_size
+    y_write = batch * hidden_size * dtype_size
+    return x_read + residual_read + weight_read + y_write
 
 
 def gb_per_second(num_bytes: int, elapsed_ms: float) -> float:
@@ -110,6 +128,7 @@ def main() -> None:
     print("dtype: float32")
     print(f"warmup: {args.warmup}, repeat: {args.repeat}")
     print()
+    print("RMSNorm")
     print(
         f"{'batch':>8} {'hidden':>8} "
         f"{'torch med':>10} {'custom med':>11} {'custom p90':>11} "
@@ -132,6 +151,41 @@ def main() -> None:
             f"{batch:8d} {hidden_size:8d} "
             f"{torch_stats.median_ms:10.4f} {custom_stats.median_ms:11.4f} "
             f"{custom_stats.p90_ms:11.4f} {bandwidth:12.2f} {speedup:10.2f}x"
+        )
+
+    print()
+    print("Fused add + RMSNorm")
+    print(
+        f"{'batch':>8} {'hidden':>8} "
+        f"{'torch med':>10} {'fused med':>10} {'fused p90':>10} "
+        f"{'fused GB/s':>12} {'speedup':>10}"
+    )
+
+    for batch, hidden_size in get_shapes(args.extended):
+        x = torch.randn(batch, hidden_size, device="cuda", dtype=torch.float32)
+        residual = torch.randn(batch, hidden_size, device="cuda", dtype=torch.float32)
+        weight = torch.randn(hidden_size, device="cuda", dtype=torch.float32)
+
+        torch_stats = time_cuda(
+            lambda: fused_add_rmsnorm_reference(x, residual, weight, eps),
+            args.warmup,
+            args.repeat,
+        )
+        fused_stats = time_cuda(
+            lambda: rmsnorm_cuda.fused_add_rmsnorm(x, residual, weight, eps),
+            args.warmup,
+            args.repeat,
+        )
+        speedup = torch_stats.median_ms / fused_stats.median_ms
+        bandwidth = gb_per_second(
+            estimate_fused_custom_bytes(batch, hidden_size, x.element_size()),
+            fused_stats.median_ms,
+        )
+
+        print(
+            f"{batch:8d} {hidden_size:8d} "
+            f"{torch_stats.median_ms:10.4f} {fused_stats.median_ms:10.4f} "
+            f"{fused_stats.p90_ms:10.4f} {bandwidth:12.2f} {speedup:10.2f}x"
         )
 
 
