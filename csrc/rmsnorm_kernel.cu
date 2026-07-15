@@ -2,6 +2,7 @@
 
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAStream.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 
@@ -205,6 +206,85 @@ __global__ void fused_add_rmsnorm_warp_kernel(
   }
 }
 
+__global__ void rmsnorm_half2_warp_kernel(
+    const half2* __restrict__ x,
+    const half2* __restrict__ weight,
+    half2* __restrict__ y,
+    int64_t rows,
+    int64_t pair_count,
+    int64_t hidden_size,
+    float eps) {
+  extern __shared__ float shared_warp_sums[];
+
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  if (row >= rows) {
+    return;
+  }
+
+  const int64_t base_pair = static_cast<int64_t>(row) * pair_count;
+
+  float local_sum = 0.0f;
+  for (int64_t pair = tid; pair < pair_count; pair += blockDim.x) {
+    const float2 value = __half22float2(x[base_pair + pair]);
+    local_sum += value.x * value.x + value.y * value.y;
+  }
+
+  const float row_sum = block_reduce_sum(local_sum, shared_warp_sums);
+  const float inv_rms = rsqrtf(row_sum / static_cast<float>(hidden_size) + eps);
+
+  for (int64_t pair = tid; pair < pair_count; pair += blockDim.x) {
+    const float2 value = __half22float2(x[base_pair + pair]);
+    const float2 scale = __half22float2(weight[pair]);
+    y[base_pair + pair] =
+        __floats2half2_rn(value.x * inv_rms * scale.x, value.y * inv_rms * scale.y);
+  }
+}
+
+__global__ void fused_add_rmsnorm_half2_warp_kernel(
+    const half2* __restrict__ x,
+    const half2* __restrict__ residual,
+    const half2* __restrict__ weight,
+    half2* __restrict__ y,
+    int64_t rows,
+    int64_t pair_count,
+    int64_t hidden_size,
+    float eps) {
+  extern __shared__ float shared_warp_sums[];
+
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  if (row >= rows) {
+    return;
+  }
+
+  const int64_t base_pair = static_cast<int64_t>(row) * pair_count;
+
+  float local_sum = 0.0f;
+  for (int64_t pair = tid; pair < pair_count; pair += blockDim.x) {
+    const float2 x_value = __half22float2(x[base_pair + pair]);
+    const float2 residual_value = __half22float2(residual[base_pair + pair]);
+    const float value0 = x_value.x + residual_value.x;
+    const float value1 = x_value.y + residual_value.y;
+    local_sum += value0 * value0 + value1 * value1;
+  }
+
+  const float row_sum = block_reduce_sum(local_sum, shared_warp_sums);
+  const float inv_rms = rsqrtf(row_sum / static_cast<float>(hidden_size) + eps);
+
+  for (int64_t pair = tid; pair < pair_count; pair += blockDim.x) {
+    const float2 x_value = __half22float2(x[base_pair + pair]);
+    const float2 residual_value = __half22float2(residual[base_pair + pair]);
+    const float2 scale = __half22float2(weight[pair]);
+    const float value0 = x_value.x + residual_value.x;
+    const float value1 = x_value.y + residual_value.y;
+    y[base_pair + pair] =
+        __floats2half2_rn(value0 * inv_rms * scale.x, value1 * inv_rms * scale.y);
+  }
+}
+
 template <typename scalar_t>
 void launch_rmsnorm_kernel(
     at::Tensor x,
@@ -299,6 +379,56 @@ void launch_fused_add_rmsnorm_warp_kernel(
       eps);
 }
 
+void launch_rmsnorm_half2_warp_kernel(
+    at::Tensor x,
+    at::Tensor weight,
+    at::Tensor y,
+    int64_t rows,
+    int64_t hidden_size,
+    float eps,
+    cudaStream_t stream) {
+  constexpr int threads = 256;
+  constexpr int warps = threads / 32;
+  const dim3 blocks(static_cast<unsigned int>(rows));
+  const size_t shared_bytes = warps * sizeof(float);
+  const int64_t pair_count = hidden_size / 2;
+
+  rmsnorm_half2_warp_kernel<<<blocks, threads, shared_bytes, stream>>>(
+      reinterpret_cast<const half2*>(x.data_ptr<at::Half>()),
+      reinterpret_cast<const half2*>(weight.data_ptr<at::Half>()),
+      reinterpret_cast<half2*>(y.data_ptr<at::Half>()),
+      rows,
+      pair_count,
+      hidden_size,
+      eps);
+}
+
+void launch_fused_add_rmsnorm_half2_warp_kernel(
+    at::Tensor x,
+    at::Tensor residual,
+    at::Tensor weight,
+    at::Tensor y,
+    int64_t rows,
+    int64_t hidden_size,
+    float eps,
+    cudaStream_t stream) {
+  constexpr int threads = 256;
+  constexpr int warps = threads / 32;
+  const dim3 blocks(static_cast<unsigned int>(rows));
+  const size_t shared_bytes = warps * sizeof(float);
+  const int64_t pair_count = hidden_size / 2;
+
+  fused_add_rmsnorm_half2_warp_kernel<<<blocks, threads, shared_bytes, stream>>>(
+      reinterpret_cast<const half2*>(x.data_ptr<at::Half>()),
+      reinterpret_cast<const half2*>(residual.data_ptr<at::Half>()),
+      reinterpret_cast<const half2*>(weight.data_ptr<at::Half>()),
+      reinterpret_cast<half2*>(y.data_ptr<at::Half>()),
+      rows,
+      pair_count,
+      hidden_size,
+      eps);
+}
+
 }  // namespace
 
 
@@ -382,6 +512,35 @@ at::Tensor rmsnorm_warp_forward(at::Tensor x, at::Tensor weight, double eps) {
     default:
       TORCH_CHECK(false, "unsupported dtype");
   }
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+  return y;
+}
+
+
+at::Tensor rmsnorm_half2_forward(at::Tensor x, at::Tensor weight, double eps) {
+  TORCH_CHECK(x.is_cuda(), "x must be a CUDA tensor");
+  TORCH_CHECK(weight.is_cuda(), "weight must be a CUDA tensor");
+  TORCH_CHECK(x.scalar_type() == at::kHalf, "x must be float16");
+  TORCH_CHECK(weight.scalar_type() == at::kHalf, "weight must be float16");
+  TORCH_CHECK(x.dim() == 2, "x must have shape [batch, hidden_size]");
+  TORCH_CHECK(weight.dim() == 1, "weight must have shape [hidden_size]");
+  TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
+  TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
+
+  const int64_t rows = x.size(0);
+  const int64_t hidden_size = x.size(1);
+  TORCH_CHECK(weight.size(0) == hidden_size, "weight size must match x hidden_size");
+  TORCH_CHECK(hidden_size > 0, "hidden_size must be greater than 0");
+  TORCH_CHECK(hidden_size % 2 == 0, "hidden_size must be even for half2");
+
+  auto y = at::empty_like(x);
+  if (rows == 0) {
+    return y;
+  }
+
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+  launch_rmsnorm_half2_warp_kernel(x, weight, y, rows, hidden_size, static_cast<float>(eps), stream);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return y;
@@ -488,6 +647,45 @@ at::Tensor fused_add_rmsnorm_warp_forward(
     default:
       TORCH_CHECK(false, "unsupported dtype");
   }
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+  return y;
+}
+
+
+at::Tensor fused_add_rmsnorm_half2_forward(
+    at::Tensor x,
+    at::Tensor residual,
+    at::Tensor weight,
+    double eps) {
+  TORCH_CHECK(x.is_cuda(), "x must be a CUDA tensor");
+  TORCH_CHECK(residual.is_cuda(), "residual must be a CUDA tensor");
+  TORCH_CHECK(weight.is_cuda(), "weight must be a CUDA tensor");
+  TORCH_CHECK(x.scalar_type() == at::kHalf, "x must be float16");
+  TORCH_CHECK(residual.scalar_type() == at::kHalf, "residual must be float16");
+  TORCH_CHECK(weight.scalar_type() == at::kHalf, "weight must be float16");
+  TORCH_CHECK(x.dim() == 2, "x must have shape [batch, hidden_size]");
+  TORCH_CHECK(residual.dim() == 2, "residual must have shape [batch, hidden_size]");
+  TORCH_CHECK(weight.dim() == 1, "weight must have shape [hidden_size]");
+  TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
+  TORCH_CHECK(residual.is_contiguous(), "residual must be contiguous");
+  TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
+  TORCH_CHECK(residual.sizes() == x.sizes(), "residual shape must match x shape");
+
+  const int64_t rows = x.size(0);
+  const int64_t hidden_size = x.size(1);
+  TORCH_CHECK(weight.size(0) == hidden_size, "weight size must match x hidden_size");
+  TORCH_CHECK(hidden_size > 0, "hidden_size must be greater than 0");
+  TORCH_CHECK(hidden_size % 2 == 0, "hidden_size must be even for half2");
+
+  auto y = at::empty_like(x);
+  if (rows == 0) {
+    return y;
+  }
+
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+  launch_fused_add_rmsnorm_half2_warp_kernel(
+      x, residual, weight, y, rows, hidden_size, static_cast<float>(eps), stream);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return y;

@@ -146,13 +146,21 @@ def main() -> None:
     print(f"device: {torch.cuda.get_device_name(0)}")
     print(f"dtype: {args.dtype}")
     print(f"warmup: {args.warmup}, repeat: {args.repeat}")
+    use_half2 = dtype == torch.float16
     print()
     print("RMSNorm")
-    print(
-        f"{'batch':>8} {'hidden':>8} "
-        f"{'torch':>9} {'shared':>9} {'warp':>9} {'warp p90':>9} "
-        f"{'warp GB/s':>10} {'warp/shared':>12} {'torch/warp':>11}"
-    )
+    if use_half2:
+        print(
+            f"{'batch':>8} {'hidden':>8} "
+            f"{'torch':>9} {'shared':>9} {'warp':>9} {'half2':>9} {'half2 p90':>9} "
+            f"{'half2 GB/s':>11} {'half2/warp':>11} {'torch/half2':>12}"
+        )
+    else:
+        print(
+            f"{'batch':>8} {'hidden':>8} "
+            f"{'torch':>9} {'shared':>9} {'warp':>9} {'warp p90':>9} "
+            f"{'warp GB/s':>10} {'warp/shared':>12} {'torch/warp':>11}"
+        )
 
     for batch, hidden_size in get_shapes(args.extended):
         x = torch.randn(batch, hidden_size, device="cuda", dtype=dtype)
@@ -161,27 +169,53 @@ def main() -> None:
         torch_stats = time_cuda(lambda: rmsnorm_reference(x, weight, eps), args.warmup, args.repeat)
         shared_stats = time_cuda(lambda: rmsnorm_cuda.rmsnorm(x, weight, eps), args.warmup, args.repeat)
         warp_stats = time_cuda(lambda: rmsnorm_cuda.rmsnorm_warp(x, weight, eps), args.warmup, args.repeat)
-        torch_speedup = torch_stats.median_ms / warp_stats.median_ms
-        warp_vs_shared = shared_stats.median_ms / warp_stats.median_ms
-        bandwidth = gb_per_second(
-            estimate_custom_bytes(batch, hidden_size, x.element_size()),
-            warp_stats.median_ms,
-        )
-
-        print(
-            f"{batch:8d} {hidden_size:8d} "
-            f"{torch_stats.median_ms:9.4f} {shared_stats.median_ms:9.4f} "
-            f"{warp_stats.median_ms:9.4f} {warp_stats.p90_ms:9.4f} "
-            f"{bandwidth:10.2f} {warp_vs_shared:12.2f}x {torch_speedup:10.2f}x"
-        )
+        if use_half2:
+            half2_stats = time_cuda(
+                lambda: rmsnorm_cuda.rmsnorm_half2(x, weight, eps),
+                args.warmup,
+                args.repeat,
+            )
+            torch_speedup = torch_stats.median_ms / half2_stats.median_ms
+            half2_vs_warp = warp_stats.median_ms / half2_stats.median_ms
+            bandwidth = gb_per_second(
+                estimate_custom_bytes(batch, hidden_size, x.element_size()),
+                half2_stats.median_ms,
+            )
+            print(
+                f"{batch:8d} {hidden_size:8d} "
+                f"{torch_stats.median_ms:9.4f} {shared_stats.median_ms:9.4f} "
+                f"{warp_stats.median_ms:9.4f} {half2_stats.median_ms:9.4f} "
+                f"{half2_stats.p90_ms:9.4f} {bandwidth:11.2f} "
+                f"{half2_vs_warp:11.2f}x {torch_speedup:11.2f}x"
+            )
+        else:
+            torch_speedup = torch_stats.median_ms / warp_stats.median_ms
+            warp_vs_shared = shared_stats.median_ms / warp_stats.median_ms
+            bandwidth = gb_per_second(
+                estimate_custom_bytes(batch, hidden_size, x.element_size()),
+                warp_stats.median_ms,
+            )
+            print(
+                f"{batch:8d} {hidden_size:8d} "
+                f"{torch_stats.median_ms:9.4f} {shared_stats.median_ms:9.4f} "
+                f"{warp_stats.median_ms:9.4f} {warp_stats.p90_ms:9.4f} "
+                f"{bandwidth:10.2f} {warp_vs_shared:12.2f}x {torch_speedup:10.2f}x"
+            )
 
     print()
     print("Fused add + RMSNorm")
-    print(
-        f"{'batch':>8} {'hidden':>8} "
-        f"{'torch':>9} {'shared':>9} {'warp':>9} {'warp p90':>9} "
-        f"{'warp GB/s':>10} {'warp/shared':>12} {'torch/warp':>11}"
-    )
+    if use_half2:
+        print(
+            f"{'batch':>8} {'hidden':>8} "
+            f"{'torch':>9} {'shared':>9} {'warp':>9} {'half2':>9} {'half2 p90':>9} "
+            f"{'half2 GB/s':>11} {'half2/warp':>11} {'torch/half2':>12}"
+        )
+    else:
+        print(
+            f"{'batch':>8} {'hidden':>8} "
+            f"{'torch':>9} {'shared':>9} {'warp':>9} {'warp p90':>9} "
+            f"{'warp GB/s':>10} {'warp/shared':>12} {'torch/warp':>11}"
+        )
 
     for batch, hidden_size in get_shapes(args.extended):
         x = torch.randn(batch, hidden_size, device="cuda", dtype=dtype)
@@ -203,19 +237,38 @@ def main() -> None:
             args.warmup,
             args.repeat,
         )
-        torch_speedup = torch_stats.median_ms / warp_stats.median_ms
-        warp_vs_shared = shared_stats.median_ms / warp_stats.median_ms
-        bandwidth = gb_per_second(
-            estimate_fused_custom_bytes(batch, hidden_size, x.element_size()),
-            warp_stats.median_ms,
-        )
-
-        print(
-            f"{batch:8d} {hidden_size:8d} "
-            f"{torch_stats.median_ms:9.4f} {shared_stats.median_ms:9.4f} "
-            f"{warp_stats.median_ms:9.4f} {warp_stats.p90_ms:9.4f} "
-            f"{bandwidth:10.2f} {warp_vs_shared:12.2f}x {torch_speedup:10.2f}x"
-        )
+        if use_half2:
+            half2_stats = time_cuda(
+                lambda: rmsnorm_cuda.fused_add_rmsnorm_half2(x, residual, weight, eps),
+                args.warmup,
+                args.repeat,
+            )
+            torch_speedup = torch_stats.median_ms / half2_stats.median_ms
+            half2_vs_warp = warp_stats.median_ms / half2_stats.median_ms
+            bandwidth = gb_per_second(
+                estimate_fused_custom_bytes(batch, hidden_size, x.element_size()),
+                half2_stats.median_ms,
+            )
+            print(
+                f"{batch:8d} {hidden_size:8d} "
+                f"{torch_stats.median_ms:9.4f} {shared_stats.median_ms:9.4f} "
+                f"{warp_stats.median_ms:9.4f} {half2_stats.median_ms:9.4f} "
+                f"{half2_stats.p90_ms:9.4f} {bandwidth:11.2f} "
+                f"{half2_vs_warp:11.2f}x {torch_speedup:11.2f}x"
+            )
+        else:
+            torch_speedup = torch_stats.median_ms / warp_stats.median_ms
+            warp_vs_shared = shared_stats.median_ms / warp_stats.median_ms
+            bandwidth = gb_per_second(
+                estimate_fused_custom_bytes(batch, hidden_size, x.element_size()),
+                warp_stats.median_ms,
+            )
+            print(
+                f"{batch:8d} {hidden_size:8d} "
+                f"{torch_stats.median_ms:9.4f} {shared_stats.median_ms:9.4f} "
+                f"{warp_stats.median_ms:9.4f} {warp_stats.p90_ms:9.4f} "
+                f"{bandwidth:10.2f} {warp_vs_shared:12.2f}x {torch_speedup:10.2f}x"
+            )
 
 
 if __name__ == "__main__":

@@ -24,6 +24,11 @@ def rmsnorm_warp(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> to
     return _C.rmsnorm_warp_forward(x, weight, float(eps))
 
 
+def rmsnorm_half2(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Run float16 RMSNorm forward with half2 vectorized loads."""
+    return _C.rmsnorm_half2_forward(x, weight, float(eps))
+
+
 def fused_add_rmsnorm(
     x: torch.Tensor,
     residual: torch.Tensor,
@@ -48,9 +53,21 @@ def fused_add_rmsnorm_warp(
     return _C.fused_add_rmsnorm_warp_forward(x, residual, weight, float(eps))
 
 
+def fused_add_rmsnorm_half2(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Run float16 fused residual add and RMSNorm with half2 vectorized loads."""
+    return _C.fused_add_rmsnorm_half2_forward(x, residual, weight, float(eps))
+
+
 __all__ = [
     "fused_add_rmsnorm",
+    "fused_add_rmsnorm_half2",
     "fused_add_rmsnorm_warp",
     "rmsnorm",
+    "rmsnorm_half2",
     "rmsnorm_warp",
 ]

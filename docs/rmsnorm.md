@@ -199,7 +199,61 @@ for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
 
 这不一定会带来巨大加速，因为当前 RMSNorm 很多时候受显存读写和 kernel launch 开销影响。但它减少了 shared memory 使用和同步次数，是 CUDA reduction 优化里非常基础、非常常见的一步。
 
-## 6. 写回输出
+## 6. half2 向量化读写
+
+项目里还实现了 `float16` 专用的 half2 版本：
+
+```python
+rmsnorm_cuda.rmsnorm_half2(x, weight)
+rmsnorm_cuda.fused_add_rmsnorm_half2(x, residual, weight)
+```
+
+`half2` 可以理解成：
+
+```text
+一个寄存器里装两个 float16
+一次 load 读两个 half
+一次 store 写两个 half
+```
+
+所以 half2 版本要求：
+
+```text
+dtype 必须是 float16
+hidden_size 必须是偶数
+```
+
+当前 half2 kernel 的第一遍读取：
+
+```text
+读 x 的两个 half
+转成两个 float
+把两个数字的平方都加进 local_sum
+```
+
+第二遍写回：
+
+```text
+读 x 的两个 half
+读 weight 的两个 half
+用 float 算输出
+打包成 half2 写回
+```
+
+这次 benchmark 里，half2 版本并没有稳定超过普通 warp 版本。这个结果很重要：向量化读写不是自动加速。
+
+可能原因包括：
+
+```text
+当前 kernel 仍然要读 x 两遍
+half2 读完后还要转 float 做平方和
+kernel launch 开销对小 shape 影响很大
+访存不是唯一瓶颈
+```
+
+所以 half2 版本先保留为实验路径，用来学习和对比。后续如果继续优化，需要配合更多手段，比如减少重复读取、让每个 thread 处理更多 half2、或者做更系统的 profiling。
+
+## 7. 写回输出
 
 算出整行的 `inv_rms` 后，每个 thread 再处理自己负责的列：
 
@@ -216,7 +270,7 @@ x 的每一行都有自己的 inv_rms
 weight 只按 hidden 维度变化
 ```
 
-## 7. 为什么能比 PyTorch reference 快
+## 8. 为什么能比 PyTorch reference 快
 
 benchmark 里的 PyTorch reference 是：
 
@@ -247,7 +301,7 @@ multiply weight
 
 所以它减少了中间步骤和 kernel launch 开销。
 
-## 8. 为什么要看 GB/s
+## 9. 为什么要看 GB/s
 
 RMSNorm 主要不是复杂计算，而是读写显存。
 
@@ -289,7 +343,7 @@ bytes = batch * hidden_size * element_size * 4
 
 这是粗略估算，不代表真实硬件事务数，但足够帮助我们判断优化方向。
 
-## 9. benchmark 输出怎么看
+## 10. benchmark 输出怎么看
 
 运行：
 
@@ -311,6 +365,16 @@ warp/shared shared med / warp med
 torch/warp  torch med / warp med
 ```
 
+当 `--dtype float16` 时，还会额外输出 half2 相关列：
+
+```text
+half2       half2 版本的 median latency，单位 ms
+half2 p90   half2 版本的 p90 latency，单位 ms
+half2 GB/s  half2 版本的估算显存带宽
+half2/warp  warp med / half2 med
+torch/half2 torch med / half2 med
+```
+
 为什么用 median：
 
 ```text
@@ -325,7 +389,7 @@ p90 能看尾延迟是否稳定
 .\.venv\Scripts\python.exe benchmarks\bench_rmsnorm.py --extended
 ```
 
-## 10. fused add + RMSNorm 是什么
+## 11. fused add + RMSNorm 是什么
 
 真实大模型里经常会看到这种模式：
 
@@ -372,7 +436,7 @@ out = RMSNorm(x + residual)
 
 它仍然会重复读取 `x` 和 `residual`，因为第一遍要算平方和，第二遍要写输出。后续优化可以尝试让更小的 hidden size 复用中间值，或者用更高级的 reduction 写法。
 
-## 11. 当前 kernel 的限制
+## 12. 当前 kernel 的限制
 
 当前版本限制：
 
@@ -380,21 +444,22 @@ out = RMSNorm(x + residual)
 只支持 forward
 只支持 contiguous tensor
 每行固定使用 256 个 thread
+half2 版本只支持 float16 且 hidden_size 为偶数
 还没有 backward
 ```
 
 这些限制是刻意保留的。第一版目标是把 CUDA kernel、PyTorch binding、测试和 benchmark 全链路跑通。
 
-## 12. 下一步优化
+## 13. 下一步优化
 
 建议顺序：
 
 ```text
 1. 用 benchmark 观察不同 batch / hidden_size 的 GB/s
-2. 增加向量化读写，比如 half2 / bf162
+2. 做 Nsight Compute profiling，确认瓶颈到底是访存、同步还是 launch
 3. 支持任意前缀维度，比如 [batch, seq_len, hidden_size]
 4. 支持 backward
 5. 扩展更多 LLM 常见算子
 ```
 
-fused residual + RMSNorm、`float16`、`bfloat16` 和 warp shuffle reduction 都已经实现。下一步最值得做的是向量化读写，因为真实推理里低精度 tensor 通常需要一次搬多个元素，才能更好地吃满显存带宽。
+fused residual + RMSNorm、`float16`、`bfloat16`、warp shuffle reduction 和 half2 实验路径都已经实现。下一步最值得做的是 profiling，因为 benchmark 已经说明“看起来更高级”的 half2 不一定自动更快，需要用工具定位真正瓶颈。

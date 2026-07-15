@@ -14,6 +14,11 @@
 - `rmsnorm_warp(x, weight, eps)`
 - `fused_add_rmsnorm_warp(x, residual, weight, eps)`
 
+还提供 `float16` 专用的 half2 实验版本：
+
+- `rmsnorm_half2(x, weight, eps)`
+- `fused_add_rmsnorm_half2(x, residual, weight, eps)`
+
 ## RMSNorm 在做什么
 
 RMSNorm 会把每一行数字按整体大小缩放一下：
@@ -44,6 +49,7 @@ output = input / sqrt(mean(input^2) + eps) * weight
 - 支持 CUDA tensor
 - 支持 fused residual add + RMSNorm forward
 - 支持 shared memory reduction 和 warp shuffle reduction 两种实现
+- 支持 `float16` half2 向量化读写实验实现
 - 实现 forward，不实现 backward
 - 提供 correctness test 和 benchmark
 
@@ -103,7 +109,7 @@ y_ref = x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps) * weight
 当前结果：
 
 ```text
-38 passed
+45 passed
 ```
 
 ## 性能测试
@@ -123,6 +129,8 @@ warp GB/s    warp 版本的估算显存带宽
 warp/shared  shared med / warp med
 torch/warp   torch med / warp med
 ```
+
+当 `--dtype float16` 时，benchmark 会额外输出 half2 列，用来对比普通 warp 版本和 half2 版本。
 
 脚本会输出两张表：
 
