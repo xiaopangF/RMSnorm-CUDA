@@ -294,6 +294,68 @@ __global__ void fused_add_rmsnorm_half2_warp_kernel(
   }
 }
 
+__global__ void rmsnorm_backward_f32_kernel(
+    const float* __restrict__ grad_out,
+    const float* __restrict__ x,
+    const float* __restrict__ weight,
+    float* __restrict__ dx,
+    float* __restrict__ partial_dweight,
+    int64_t rows,
+    int64_t hidden_size,
+    float eps) {
+  extern __shared__ float shared_warp_sums[];
+
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+
+  if (row >= rows) {
+    return;
+  }
+
+  const int64_t base = static_cast<int64_t>(row) * hidden_size;
+
+  float local_square_sum = 0.0f;
+  float local_dot = 0.0f;
+  for (int64_t col = tid; col < hidden_size; col += blockDim.x) {
+    const float x_value = x[base + col];
+    const float scaled_grad = grad_out[base + col] * weight[col];
+    local_square_sum += x_value * x_value;
+    local_dot += scaled_grad * x_value;
+  }
+
+  const float square_sum = block_reduce_sum(local_square_sum, shared_warp_sums);
+  const float dot = block_reduce_sum(local_dot, shared_warp_sums);
+  const float inv_rms = rsqrtf(square_sum / static_cast<float>(hidden_size) + eps);
+  const float inv_rms3 = inv_rms * inv_rms * inv_rms;
+  const float dx_scale = inv_rms3 * dot / static_cast<float>(hidden_size);
+
+  for (int64_t col = tid; col < hidden_size; col += blockDim.x) {
+    const float x_value = x[base + col];
+    const float grad_value = grad_out[base + col];
+    const float scaled_grad = grad_value * weight[col];
+    dx[base + col] = inv_rms * scaled_grad - x_value * dx_scale;
+    partial_dweight[base + col] = grad_value * x_value * inv_rms;
+  }
+}
+
+__global__ void reduce_dweight_f32_kernel(
+    const float* __restrict__ partial_dweight,
+    float* __restrict__ dweight,
+    int64_t rows,
+    int64_t hidden_size) {
+  const int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (col >= hidden_size) {
+    return;
+  }
+
+  float sum = 0.0f;
+  for (int64_t row = 0; row < rows; ++row) {
+    sum += partial_dweight[row * hidden_size + col];
+  }
+  dweight[col] = sum;
+}
+
 template <typename scalar_t>
 void launch_rmsnorm_kernel(
     at::Tensor x,
@@ -436,6 +498,48 @@ void launch_fused_add_rmsnorm_half2_warp_kernel(
       pair_count,
       hidden_size,
       eps);
+}
+
+void launch_rmsnorm_backward_f32_kernel(
+    at::Tensor grad_out,
+    at::Tensor x,
+    at::Tensor weight,
+    at::Tensor dx,
+    at::Tensor partial_dweight,
+    int64_t rows,
+    int64_t hidden_size,
+    float eps,
+    cudaStream_t stream) {
+  constexpr int threads = 256;
+  constexpr int warps = threads / 32;
+  const dim3 blocks(static_cast<unsigned int>(rows));
+  const size_t shared_bytes = warps * sizeof(float);
+
+  rmsnorm_backward_f32_kernel<<<blocks, threads, shared_bytes, stream>>>(
+      grad_out.data_ptr<float>(),
+      x.data_ptr<float>(),
+      weight.data_ptr<float>(),
+      dx.data_ptr<float>(),
+      partial_dweight.data_ptr<float>(),
+      rows,
+      hidden_size,
+      eps);
+}
+
+void launch_reduce_dweight_f32_kernel(
+    at::Tensor partial_dweight,
+    at::Tensor dweight,
+    int64_t rows,
+    int64_t hidden_size,
+    cudaStream_t stream) {
+  constexpr int threads = 256;
+  const dim3 blocks(static_cast<unsigned int>((hidden_size + threads - 1) / threads));
+
+  reduce_dweight_f32_kernel<<<blocks, threads, 0, stream>>>(
+      partial_dweight.data_ptr<float>(),
+      dweight.data_ptr<float>(),
+      rows,
+      hidden_size);
 }
 
 }  // namespace
@@ -695,4 +799,56 @@ at::Tensor fused_add_rmsnorm_half2_forward(
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return y;
+}
+
+
+std::vector<at::Tensor> rmsnorm_backward_forward(
+    at::Tensor grad_out,
+    at::Tensor x,
+    at::Tensor weight,
+    double eps) {
+  TORCH_CHECK(grad_out.is_cuda(), "grad_out must be a CUDA tensor");
+  TORCH_CHECK(x.is_cuda(), "x must be a CUDA tensor");
+  TORCH_CHECK(weight.is_cuda(), "weight must be a CUDA tensor");
+  TORCH_CHECK(x.scalar_type() == at::kFloat, "x must be float32");
+  TORCH_CHECK(grad_out.scalar_type() == at::kFloat, "grad_out must be float32");
+  TORCH_CHECK(weight.scalar_type() == at::kFloat, "weight must be float32");
+  TORCH_CHECK(x.dim() >= 1, "x must have shape [..., hidden_size]");
+  TORCH_CHECK(weight.dim() == 1, "weight must have shape [hidden_size]");
+  TORCH_CHECK(grad_out.sizes() == x.sizes(), "grad_out shape must match x shape");
+  TORCH_CHECK(grad_out.is_contiguous(), "grad_out must be contiguous");
+  TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
+  TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
+
+  const int64_t hidden_size = get_hidden_size(x);
+  TORCH_CHECK(weight.size(0) == hidden_size, "weight size must match x hidden_size");
+  TORCH_CHECK(hidden_size > 0, "hidden_size must be greater than 0");
+  const int64_t rows = get_row_count(x, hidden_size);
+
+  auto dx = at::empty_like(x);
+  auto dweight = at::empty_like(weight);
+  if (rows == 0) {
+    dweight.zero_();
+    return {dx, dweight};
+  }
+
+  auto partial_dweight = at::empty_like(x);
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+
+  launch_rmsnorm_backward_f32_kernel(
+      grad_out,
+      x,
+      weight,
+      dx,
+      partial_dweight,
+      rows,
+      hidden_size,
+      static_cast<float>(eps),
+      stream);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+  launch_reduce_dweight_f32_kernel(partial_dweight, dweight, rows, hidden_size, stream);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+  return {dx, dweight};
 }

@@ -2,13 +2,14 @@
 
 这份文档解释 RMSNorm backward 要算什么，以及当前项目已经准备好的 reference。
 
-当前还没有 CUDA backward kernel。现在完成的是：
+当前已经有第一版 CUDA backward kernel。现在完成的是：
 
 ```text
 纯 PyTorch forward reference
 手写 backward formula reference
 backward reference tests
 gradcheck
+float32 CUDA backward
 ```
 
 这些东西是后面写 CUDA backward 的对照答案。
@@ -144,7 +145,48 @@ tests/test_backward_reference.py
 3. 用 gradcheck 检查 reference forward 的梯度
 ```
 
-## 6. 后续 CUDA backward 怎么写
+## 6. 当前 CUDA backward 实现
+
+当前 API：
+
+```python
+rmsnorm_cuda.rmsnorm_backward(grad_out, x, weight, eps) -> dx, dweight
+```
+
+当前限制：
+
+```text
+只支持普通 RMSNorm
+只支持 float32
+支持 [..., hidden_size]
+要求 x / weight / grad_out contiguous
+还不支持 fused backward
+还不支持 float16 / bfloat16 backward
+```
+
+当前实现分两步：
+
+```text
+1. rmsnorm_backward_f32_kernel
+   每个 CUDA block 处理一行
+   算这一行的 dx
+   写出 partial_dweight，shape 和 x 一样
+
+2. reduce_dweight_f32_kernel
+   沿 rows 方向把 partial_dweight 加起来
+   得到最终 dweight，shape 是 [hidden_size]
+```
+
+这样写不是最高性能，但很适合第一版：
+
+```text
+公式清楚
+容易 debug
+容易和 reference 对齐
+后续可以单独优化 dweight reduction
+```
+
+## 7. 后续 CUDA backward 怎么优化
 
 CUDA backward 大概率会分两类输出：
 
@@ -161,7 +203,7 @@ dweight
 需要 reduction
 ```
 
-第一版建议不要追求极致性能，可以先写成两步：
+第一版已经按这个两步方案实现：
 
 ```text
 1. 每个 row 算 dx，同时写出 partial dweight
@@ -170,26 +212,18 @@ dweight
 
 这样代码更容易验证。等正确性稳定后，再考虑把 `dweight` reduction 优化掉。
 
-## 7. 下一步
+## 8. 下一步
 
 建议下一步实现：
 
 ```text
-rmsnorm_backward(x, weight, grad_out, eps) -> dx, dweight
+fused_add_rmsnorm_backward(grad_out, x, residual, weight, eps) -> dx, dresidual, dweight
 ```
 
-先只支持：
+也可以先优化当前 backward：
 
 ```text
-float32
-contiguous tensor
-forward 输入 [..., hidden_size]
-```
-
-通过测试后，再扩展到：
-
-```text
-float16 / bfloat16
-fused add + RMSNorm backward
-更快的 dweight reduction
+减少 partial_dweight 临时 tensor
+优化 dweight reduction
+支持 float16 / bfloat16
 ```

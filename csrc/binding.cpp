@@ -19,6 +19,11 @@ at::Tensor fused_add_rmsnorm_half2_forward(
     at::Tensor residual,
     at::Tensor weight,
     double eps);
+std::vector<at::Tensor> rmsnorm_backward_forward(
+    at::Tensor grad_out,
+    at::Tensor x,
+    at::Tensor weight,
+    double eps);
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -37,4 +42,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "fused_add_rmsnorm_half2_forward",
       &fused_add_rmsnorm_half2_forward,
       "Fused residual add and RMSNorm forward with half2 loads (CUDA)");
+  m.def(
+      "rmsnorm_backward_forward",
+      &rmsnorm_backward_forward,
+      "RMSNorm backward returning dx and dweight (CUDA)");
 }

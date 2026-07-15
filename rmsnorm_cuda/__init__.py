@@ -63,11 +63,23 @@ def fused_add_rmsnorm_half2(
     return _C.fused_add_rmsnorm_half2_forward(x, residual, weight, float(eps))
 
 
+def rmsnorm_backward(
+    grad_out: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run float32 RMSNorm backward with the custom CUDA kernels."""
+    dx, dweight = _C.rmsnorm_backward_forward(grad_out, x, weight, float(eps))
+    return dx, dweight
+
+
 __all__ = [
     "fused_add_rmsnorm",
     "fused_add_rmsnorm_half2",
     "fused_add_rmsnorm_warp",
     "rmsnorm",
+    "rmsnorm_backward",
     "rmsnorm_half2",
     "rmsnorm_warp",
 ]

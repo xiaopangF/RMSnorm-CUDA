@@ -19,6 +19,10 @@
 - `rmsnorm_half2(x, weight, eps)`
 - `fused_add_rmsnorm_half2(x, residual, weight, eps)`
 
+当前还提供第一版 `float32` backward：
+
+- `rmsnorm_backward(grad_out, x, weight, eps) -> (dx, dweight)`
+
 ## RMSNorm 在做什么
 
 RMSNorm 会把每一行数字按整体大小缩放一下：
@@ -51,7 +55,9 @@ output = input / sqrt(mean(input^2) + eps) * weight
 - 支持 fused residual add + RMSNorm forward
 - 支持 shared memory reduction 和 warp shuffle reduction 两种实现
 - 支持 `float16` half2 向量化读写实验实现
-- 实现 forward，不实现 backward
+- 支持普通 RMSNorm 的 `float32` backward
+- forward 路径覆盖普通 RMSNorm 和 fused add + RMSNorm
+- backward 目前只覆盖普通 RMSNorm 的 `float32`
 - 提供 correctness test 和 benchmark
 
 后续再扩展：
@@ -110,7 +116,7 @@ y_ref = x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + eps) * weight
 当前结果：
 
 ```text
-94 passed
+98 passed
 ```
 
 ## 性能测试
